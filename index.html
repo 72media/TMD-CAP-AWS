@@ -1,0 +1,769 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>เรดาร์ฝน OpenWeatherMap + แจ้งเตือนภัย TMD (CAP)</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Sarabun', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #1a1f2c; overflow: hidden; }
+        #map { height: 100vh; width: 100%; z-index: 1; }
+        .datetime-bar {
+            position: absolute; top: 20px; left: 50%; transform: translateX(-50%);
+            z-index: 1000; background: rgba(0,0,0,0.8); backdrop-filter: blur(12px);
+            color: #ffecb3; padding: 8px 24px; border-radius: 40px; font-size: 1rem;
+            font-weight: 600; white-space: nowrap; border: 1px solid #ff9800;
+            pointer-events: none;
+        }
+        .alert-panel-container {
+            position: absolute; top: 90px; left: 15px; z-index: 1000;
+            max-width: 440px; width: calc(100% - 30px);
+        }
+        .alert-panel {
+            background: rgba(0,0,0,0.85); backdrop-filter: blur(10px);
+            border-radius: 16px; border-left: 5px solid #ff9800;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.4); color: #f0f0f0;
+            overflow: hidden;
+        }
+        .panel-header {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 12px 16px; cursor: pointer; background: rgba(255,152,0,0.2);
+            border-bottom: 1px solid rgba(255,152,0,0.3);
+        }
+        .panel-header h3 { margin: 0; font-size: 1rem; display: flex; align-items: center; gap: 8px; }
+        .panel-header h3 a { color: #ffecb3; text-decoration: none; border-bottom: 1px dotted #ff9800; }
+        .panel-header h3 a:hover { color: #ff9800; }
+        .toggle-btn { background: none; border: none; color: #ff9800; font-size: 1.3rem; cursor: pointer; width: 28px; height: 28px; border-radius: 30px; display: flex; align-items: center; justify-content: center; }
+        .toggle-btn:hover { background: rgba(255,152,0,0.3); }
+        .panel-content {
+            padding: 12px 16px; transition: max-height 0.3s ease-out, padding 0.2s;
+            max-height: 550px; overflow-y: auto; font-size: 0.85rem;
+        }
+        .panel-content.collapsed { max-height: 0; padding: 0 16px; overflow: hidden; }
+        .info-row { margin: 6px 0; line-height: 1.4; }
+        .section-title { font-weight: bold; margin-top: 12px; margin-bottom: 6px; color: #ffb347; border-left: 3px solid #ff9800; padding-left: 8px; }
+        .url-input-group, .file-input-group { display: flex; gap: 8px; margin: 10px 0; flex-wrap: wrap; }
+        .url-input-group input, .file-input-group input { flex: 1; padding: 10px 12px; border-radius: 40px; border: none; background: #2c2f36; color: white; font-size: 0.8rem; font-family: monospace; }
+        .load-btn, .upload-btn, .clear-btn, .radar-toggle-btn { background: #ff9800; border: none; padding: 8px 14px; border-radius: 40px; font-weight: bold; cursor: pointer; transition: 0.2s; margin-top: 2px; }
+        .upload-btn { background: #4caf50; }
+        .clear-btn { background: #5a5f73; color: white; }
+        .radar-toggle-btn { background: #2196f3; color: white; width: 100%; margin-top: 12px; }
+        .radar-toggle-btn.active { background: #f44336; }
+        .current-url { background: #2a2e3a; padding: 6px 10px; border-radius: 20px; font-size: 0.7rem; word-break: break-all; font-family: monospace; margin-top: 6px; }
+        .status-badge { background: #ff9800; color: #000; border-radius: 20px; padding: 2px 8px; font-size: 0.7rem; font-weight: bold; }
+        .fetch-time { color: #ffb347; font-weight: 500; }
+        .legend { position: absolute; bottom: 20px; right: 20px; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); padding: 6px 12px; border-radius: 8px; color: white; font-size: 12px; z-index: 1000; pointer-events: none; }
+        .legend span { display: inline-block; width: 20px; height: 12px; background: #ff9800; border: 1px solid #fff; margin-right: 6px; }
+        .radar-legend { background: #3a86ff; opacity: 0.8; }
+        hr { margin: 12px 0; border-color: #444; }
+        small { opacity: 0.7; }
+        .slider-group { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
+        .slider-group label { width: 100px; }
+        input[type="range"] { flex: 1; }
+        select { background: #2c2f36; color: white; border: none; padding: 6px 10px; border-radius: 20px; margin-top: 5px; width: 100%; }
+        .loading-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 2000; display: none; justify-content: center; align-items: center; flex-direction: column; gap: 12px; backdrop-filter: blur(5px); }
+        .spinner { width: 48px; height: 48px; border: 5px solid rgba(255,255,255,0.3); border-top: 5px solid #ff9800; border-radius: 50%; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .error-msg { background: #c62828; padding: 16px; border-radius: 12px; text-align: center; max-width: 90%; }
+        .debug-console { background: #000000aa; color: #0f0; font-family: monospace; font-size: 10px; padding: 4px 8px; border-radius: 8px; margin-top: 8px; max-height: 80px; overflow-y: auto; }
+        @media (max-width: 640px) { .datetime-bar { font-size: 0.7rem; padding: 5px 12px; top: 12px; } .alert-panel-container { top: 75px; } }
+    </style>
+</head>
+<body>
+<div id="map"></div>
+<div class="datetime-bar"><span id="thaiDateTime">กำลังโหลด...</span></div>
+
+<div class="alert-panel-container">
+    <div class="alert-panel">
+        <div class="panel-header">
+            <h3><i class="fas fa-cloud-rain"></i> <a href="https://www.tmd.go.th/api/xml/CAP" target="_blank" rel="noopener noreferrer">แจ้งเตือนภัย</a> <span class="status-badge">CAP + เรดาร์ OWM</span></h3>
+            <button class="toggle-btn" id="togglePanelBtn">−</button>
+        </div>
+        <div class="panel-content" id="panelContent">
+            <div class="section-title"><i class="fas fa-upload"></i> 📂 อัปโหลด XML (เสถียร)</div>
+            <div class="file-input-group">
+                <input type="file" id="fileInput" accept=".xml">
+                <button class="upload-btn" id="uploadBtn"><i class="fas fa-file-upload"></i> อัปโหลด</button>
+                <button class="clear-btn" id="clearMapBtn"><i class="fas fa-trash-alt"></i> ล้าง</button>
+            </div>
+            <hr>
+            <div class="section-title"><i class="fas fa-link"></i> 🔗 หรือใช้ลิงก์ตรง (proxy)</div>
+            <div class="url-input-group">
+                <input type="url" id="xmlUrlInput" placeholder="https://www.tmd.go.th/uploads/CAP/xxxx.xml">
+                <button class="load-btn" id="loadUrlBtn"><i class="fas fa-globe"></i> โหลด URL</button>
+            </div>
+            <div class="current-url" id="currentUrlDisplay">ยังไม่มีข้อมูลเตือนภัย</div>
+            <div class="info-row"><i class="fas fa-map-marker-alt"></i> คลิกพื้นที่สีส้ม → ดูรายละเอียด</div>
+            <div class="info-row"><i class="fas fa-clock"></i> อัปเดตล่าสุด: <span id="fetchTimeDisplay" class="fetch-time">--:--:--</span></div>
+            
+            <!-- เพิ่ม slider ปรับความโปร่งใสของพื้นที่เตือนภัย -->
+            <div class="slider-group">
+                <label><i class="fas fa-layer-group"></i> ความโปร่งใส CAP</label>
+                <input type="range" id="alertOpacity" min="0" max="1" step="0.05" value="0.6">
+            </div>
+            <div class="info-row"><small>✨ ปรับความโปร่งใสของพื้นที่แจ้งเตือนภัย (polygon) เพื่อไม่ให้บังเรดาร์</small></div>
+            <hr>
+
+            <div class="section-title"><i class="fas fa-cloud-sun-rain"></i> 📡 เรดาร์ฝน OpenWeatherMap</div>
+            <button id="radarToggleBtn" class="radar-toggle-btn active"><i class="fas fa-eye-slash"></i> 🔴 เรดาร์กำลังแสดง</button>
+            <div class="slider-group">
+                <label><i class="fas fa-adjust"></i> ความโปร่งใสเรดาร์</label>
+                <input type="range" id="radarOpacity" min="0" max="1" step="0.05" value="0.85">
+            </div>
+            <div class="info-row">
+                <label><i class="fas fa-palette"></i> โทนสีเรดาร์:</label>
+                <select id="radarStyle">
+                    <option value="precipitation_new">🌈 สีสด (Default OWM)</option>
+                    <option value="precipitation" selected>🌧️ สีเข้มขึ้น (คล้ายเรดาร์จริง)</option>
+                    <option value="precipitation_classic">📡 คลาสสิค (ขาว-ฟ้า)</option>
+                </select>
+            </div>
+            <div class="info-row"><small>✨ อัปเดตทุก 10 นาที, ปรับ opacity เรดาร์ได้, ปรับ opacity CAP ได้</small></div>
+            <div id="radarDebug" class="debug-console">🟢 กำลังโหลดเรดาร์ OWM...</div>
+            <hr>
+            <div class="info-row"><small>🧭 ปุ่มขวาบนเปลี่ยนแผนที่ฐาน (Google/Dark/OSM/Esri)</small></div>
+            <hr>
+
+            <div class="section-title"><i class="fas fa-tint"></i> 🌧️ ปริมาณฝนสะสม 24 ชม. <span id="precipBadge" style="background:#29b6f6;color:#000;border-radius:20px;padding:2px 8px;font-size:0.68rem;font-weight:bold;margin-left:4px;">0 สถานี</span></div>
+            <div class="precip-status" id="precipStatus" style="color:#80deea;font-size:0.75rem;margin:4px 0 8px;">📂 โหลดไฟล์ XML เพื่อแสดงข้อมูลปริมาณฝน</div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+                <button class="load-btn" style="background:#29b6f6;color:#000;font-size:0.78rem;padding:7px 12px;" onclick="document.getElementById('precipFileInput').click()">
+                    <i class="fas fa-folder-open"></i> โหลดไฟล์ XML
+                </button>
+                <button id="precipLayerToggle" class="load-btn" style="background:#00796b;font-size:0.78rem;padding:7px 12px;" onclick="togglePrecipLayer()">
+                    <i class="fas fa-eye"></i> ซ่อน/แสดง
+                </button>
+                <button class="clear-btn" style="font-size:0.78rem;padding:7px 12px;" onclick="clearPrecipLayer()">
+                    <i class="fas fa-times"></i> ล้าง
+                </button>
+            </div>
+            <input type="file" id="precipFileInput" accept=".xml" style="display:none;" onchange="loadPrecipXML(event)">
+            <div class="slider-group">
+                <label><i class="fas fa-adjust"></i> ความโปร่งใสฝน</label>
+                <input type="range" id="precipOpacity" min="0.1" max="1" step="0.05" value="0.85" oninput="updatePrecipOpacity(this.value)">
+                <span id="precipOpacityVal" style="font-size:0.75rem;min-width:32px;">85%</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:4px;margin-top:6px;font-size:0.7rem;color:#aaa;">
+                <span>0</span>
+                <div style="flex:1;height:8px;border-radius:4px;background:linear-gradient(to right,#e3f2fd,#81d4fa,#29b6f6,#0288d1,#fbc02d,#f57c00,#d32f2f,#7b1fa2);"></div>
+                <span>≥90 mm</span>
+            </div>
+            <div class="info-row" style="margin-top:4px;"><small>● ขนาดวงกลม = ปริมาณฝน | คลิกเพื่อดูรายละเอียด</small></div>
+        </div>
+    </div>
+</div>
+<div class="legend">
+    <span></span> พื้นที่ประกาศเตือนภัย (CAP) <br>
+    <span class="radar-legend"></span> เรดาร์ฝน (OpenWeatherMap) <br>
+    <span style="background:#29b6f6;border-radius:50%;width:12px;height:12px;display:inline-block;margin-right:6px;vertical-align:middle;border:1px solid #fff;"></span> ปริมาณฝนสะสม 24 ชม.
+</div>
+
+<div id="loadingOverlay" class="loading-overlay">
+    <div class="spinner"></div>
+    <div>กำลังประมวลผล...</div>
+    <div id="loadingUrlHint" style="font-size:0.7rem;"></div>
+</div>
+
+<script>
+    (function() {
+        const OWM_API_KEY = "4f12b546ffcb4aa944fdf99d7ab35598";
+        
+        let map;
+        let geoJsonLayer = null;
+        let radarLayer = null;
+        let isRadarVisible = true;
+        let radarRefreshTimer = null;
+        let currentRadarStyle = "precipitation";
+        
+        function debugLog(msg, isError = false) {
+            const debugDiv = document.getElementById('radarDebug');
+            if (debugDiv) {
+                const time = new Date().toLocaleTimeString();
+                debugDiv.innerHTML = `[${time}] ${msg}<br>` + debugDiv.innerHTML;
+                if (debugDiv.children.length > 8) debugDiv.lastChild?.remove();
+            }
+            if (isError) console.error("[OWM Radar]", msg);
+            else console.log("[OWM Radar]", msg);
+        }
+        
+        function getRadarTileUrl(style) {
+            let layer = style;
+            if (style === "precipitation_classic") layer = "precipitation";
+            return `https://tile.openweathermap.org/map/${layer}/{z}/{x}/{y}.png?appid=${OWM_API_KEY}`;
+        }
+        
+        function initRadarLayer(style, opacityValue) {
+            if (radarLayer) {
+                map.removeLayer(radarLayer);
+            }
+            const tileUrl = getRadarTileUrl(style);
+            radarLayer = L.tileLayer(tileUrl, {
+                opacity: opacityValue,
+                attribution: '&copy; <a href="https://openweathermap.org/">OpenWeatherMap</a>',
+                className: 'radar-owm-layer',
+                zIndex: 500,
+                maxZoom: 18
+            });
+            if (isRadarVisible) {
+                radarLayer.addTo(map);
+            }
+            debugLog(`สร้างเรดาร์สไตล์ ${style} opacity=${opacityValue}`);
+            return radarLayer;
+        }
+        
+        function updateRadarOpacity(value) {
+            if (radarLayer) {
+                radarLayer.setOpacity(parseFloat(value));
+                debugLog(`ปรับความโปร่งใสเรดาร์เป็น ${value}`);
+            }
+        }
+        
+        function changeRadarStyle(style) {
+            currentRadarStyle = style;
+            if (!radarLayer) {
+                initRadarLayer(style, document.getElementById('radarOpacity').value);
+            } else {
+                const currentOpacity = radarLayer.options.opacity;
+                const newUrl = getRadarTileUrl(style);
+                radarLayer.setUrl(newUrl);
+                radarLayer.setOpacity(currentOpacity);
+                debugLog(`เปลี่ยนสไตล์เรดาร์เป็น ${style}`);
+            }
+            if (radarRefreshTimer) clearInterval(radarRefreshTimer);
+            radarRefreshTimer = setInterval(() => {
+                if (isRadarVisible && radarLayer) {
+                    const urlWithCache = getRadarTileUrl(currentRadarStyle) + "&_t=" + Date.now();
+                    radarLayer.setUrl(urlWithCache);
+                    debugLog("Auto-refresh เรดาร์ (10 นาที)");
+                }
+            }, 10 * 60 * 1000);
+        }
+        
+        function toggleRadar() {
+            const radarBtn = document.getElementById('radarToggleBtn');
+            isRadarVisible = !isRadarVisible;
+            if (isRadarVisible) {
+                if (radarLayer) {
+                    radarLayer.addTo(map);
+                } else {
+                    changeRadarStyle(currentRadarStyle);
+                }
+                radarBtn.innerHTML = '<i class="fas fa-eye-slash"></i> 🔴 เรดาร์กำลังแสดง';
+                radarBtn.classList.add('active');
+                debugLog("เปิดเรดาร์");
+            } else {
+                if (radarLayer && map.hasLayer(radarLayer)) map.removeLayer(radarLayer);
+                radarBtn.innerHTML = '<i class="fas fa-cloud-sun-rain"></i> เปิดเรดาร์';
+                radarBtn.classList.remove('active');
+                debugLog("ปิดเรดาร์");
+            }
+        }
+        
+        // --- ฟังก์ชันปรับความโปร่งใสของพื้นที่เตือนภัย (CAP) ---
+        function updateAlertOpacity(value) {
+            if (geoJsonLayer) {
+                // เปลี่ยน style ของทุก feature ใน layer
+                geoJsonLayer.setStyle(function(feature) {
+                    let fillColor = "#ff9800";
+                    const sev = feature.properties.severity?.toLowerCase();
+                    if (sev === "extreme") fillColor = "#d32f2f";
+                    else if (sev === "severe") fillColor = "#f44336";
+                    else if (sev === "moderate") fillColor = "#ffb74d";
+                    else if (sev === "minor") fillColor = "#ffd54f";
+                    return {
+                        color: "#fff",
+                        weight: 2,
+                        fillColor: fillColor,
+                        fillOpacity: parseFloat(value),
+                        dashArray: "4,4"
+                    };
+                });
+                debugLog(`ปรับความโปร่งใสของพื้นที่แจ้งเตือนเป็น ${value}`);
+            }
+        }
+        
+        // ========== Precipitation 24h Layer ==========
+        let precipLayerGroup = null;
+        let precipVisible = true;
+        let precipOpacityVal = 0.85;
+
+        // สีตาม threshold ปริมาณฝน (mm)
+        function getPrecipColor(mm) {
+            if (mm >= 90)  return '#7b1fa2'; // ม่วงเข้ม
+            if (mm >= 60)  return '#d32f2f'; // แดง
+            if (mm >= 40)  return '#f57c00'; // ส้มเข้ม
+            if (mm >= 20)  return '#fbc02d'; // เหลือง
+            if (mm >= 10)  return '#29b6f6'; // ฟ้า
+            if (mm >= 5)   return '#81d4fa'; // ฟ้าอ่อน
+            return '#e3f2fd';                // ขาวฟ้า (< 5mm)
+        }
+
+        // ขนาด circle ตามปริมาณฝน
+        function getPrecipRadius(mm) {
+            if (mm >= 90) return 22;
+            if (mm >= 60) return 18;
+            if (mm >= 40) return 15;
+            if (mm >= 20) return 12;
+            if (mm >= 10) return 9;
+            if (mm >= 5)  return 7;
+            return 5;
+        }
+
+        function loadPrecipXML(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const parser = new DOMParser();
+                    const xmlDoc = parser.parseFromString(e.target.result, 'application/xml');
+                    const items = xmlDoc.querySelectorAll('Item');
+                    renderPrecipLayer(items, file.name);
+                } catch(err) {
+                    document.getElementById('precipStatus').textContent = '❌ ไม่สามารถอ่านไฟล์ XML ได้';
+                }
+            };
+            reader.readAsText(file);
+            // reset input ให้โหลดไฟล์เดิมได้อีก
+            event.target.value = '';
+        }
+
+        function renderPrecipLayer(items, filename) {
+            clearPrecipLayer();
+            if (!precipLayerGroup) {
+                precipLayerGroup = L.layerGroup().addTo(map);
+            }
+
+            let count = 0;
+            let maxVal = 0;
+            const markers = [];
+
+            items.forEach(item => {
+                const lat  = parseFloat(item.querySelector('latitude')?.textContent);
+                const lon  = parseFloat(item.querySelector('longitude')?.textContent);
+                const mm   = parseFloat(item.querySelector('sensor_data')?.textContent);
+                const name = item.querySelector('site_name')?.textContent?.trim() || '';
+                const prov = item.querySelector('province_name_en')?.textContent?.trim() || '';
+                const online = item.querySelector('is_online')?.textContent;
+
+                if (isNaN(lat) || isNaN(lon) || isNaN(mm) || online === '0') return;
+
+                const color  = getPrecipColor(mm);
+                const radius = getPrecipRadius(mm);
+
+                const circle = L.circleMarker([lat, lon], {
+                    radius: radius,
+                    fillColor: color,
+                    color: '#ffffff',
+                    weight: 1,
+                    opacity: precipOpacityVal,
+                    fillOpacity: precipOpacityVal,
+                    pane: 'markerPane'
+                });
+
+                circle.bindPopup(`
+                    <div style="font-family:Sarabun,sans-serif;min-width:180px;">
+                        <div style="font-weight:bold;color:#29b6f6;font-size:1rem;margin-bottom:4px;">
+                            <i class="fas fa-tint"></i> ${mm.toFixed(1)} <small>mm</small>
+                        </div>
+                        <div style="font-size:0.85rem;">${name}</div>
+                        <div style="font-size:0.78rem;color:#aaa;">${prov}</div>
+                        <div style="margin-top:6px;background:${color};color:#000;padding:3px 8px;border-radius:20px;display:inline-block;font-size:0.78rem;font-weight:bold;">
+                            ${mm >= 60 ? '🔴 ฝนหนักมาก' : mm >= 40 ? '🟠 ฝนหนัก' : mm >= 20 ? '🟡 ฝนปานกลาง' : mm >= 10 ? '🔵 ฝนเล็กน้อย-ปานกลาง' : '⚪ ฝนเล็กน้อย'}
+                        </div>
+                    </div>
+                `);
+
+                precipLayerGroup.addLayer(circle);
+                markers.push({ lat, lon, mm });
+                count++;
+                if (mm > maxVal) maxVal = mm;
+            });
+
+            // อัปเดต UI
+            precipVisible = true;
+            const toggleBtn = document.getElementById('precipLayerToggle');
+            toggleBtn.innerHTML = '<i class="fas fa-eye"></i> ซ่อน';
+            toggleBtn.classList.remove('off');
+
+            document.getElementById('precipBadge').textContent = `${count} สถานี`;
+            document.getElementById('precipStatus').innerHTML =
+                `✅ <strong>${count}</strong> สถานี | สูงสุด <strong>${maxVal.toFixed(1)} mm</strong> | ${filename}`;
+
+            // zoom ไปยังข้อมูล
+            if (markers.length > 0) {
+                const lats = markers.map(m => m.lat);
+                const lons = markers.map(m => m.lon);
+                map.fitBounds([
+                    [Math.min(...lats) - 0.3, Math.min(...lons) - 0.3],
+                    [Math.max(...lats) + 0.3, Math.max(...lons) + 0.3]
+                ]);
+            }
+        }
+
+        function togglePrecipLayer() {
+            if (!precipLayerGroup) return;
+            const btn = document.getElementById('precipLayerToggle');
+            if (precipVisible) {
+                map.removeLayer(precipLayerGroup);
+                precipVisible = false;
+                btn.innerHTML = '<i class="fas fa-eye-slash"></i> แสดง';
+                btn.classList.add('off');
+            } else {
+                precipLayerGroup.addTo(map);
+                precipVisible = true;
+                btn.innerHTML = '<i class="fas fa-eye"></i> ซ่อน';
+                btn.classList.remove('off');
+            }
+        }
+
+        function clearPrecipLayer() {
+            if (precipLayerGroup) {
+                map.removeLayer(precipLayerGroup);
+                precipLayerGroup = null;
+            }
+            precipVisible = true;
+            document.getElementById('precipBadge').textContent = '0 สถานี';
+            document.getElementById('precipStatus').textContent = '📂 โหลดไฟล์ XML เพื่อแสดงข้อมูลปริมาณฝน';
+            const btn = document.getElementById('precipLayerToggle');
+            btn.innerHTML = '<i class="fas fa-eye"></i> แสดง';
+            btn.classList.remove('off');
+        }
+
+        function updatePrecipOpacity(val) {
+            precipOpacityVal = parseFloat(val);
+            document.getElementById('precipOpacityVal').textContent = Math.round(val * 100) + '%';
+            if (precipLayerGroup) {
+                precipLayerGroup.eachLayer(layer => {
+                    if (layer.setStyle) {
+                        layer.setStyle({ opacity: precipOpacityVal, fillOpacity: precipOpacityVal });
+                    }
+                });
+            }
+        }
+
+        // ========== ส่วนจัดการแผนที่และ CAP ==========
+        function initMap() {
+            map = L.map('map').setView([13.5, 100.6], 7.2);
+            const googleHybrid = L.tileLayer("https://{s}.google.com/vt/lyrs=s,h&x={x}&y={y}&z={z}", {
+                maxZoom: 20, subdomains: ['mt0','mt1','mt2','mt3'], attribution: "Google"
+            });
+            const darkMap = L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+                attribution: '&copy; OSM & CartoDB', subdomains: 'abcd', maxZoom: 19
+            });
+            const osm = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: '© OpenStreetMap' });
+            const esri = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", { attribution: 'Esri', maxZoom: 19 });
+            googleHybrid.addTo(map);
+            L.control.layers({
+                "🛰️ Google Hybrid": googleHybrid,
+                "🌙 Dark Mode": darkMap,
+                "🌍 OSM Standard": osm,
+                "📸 Esri Imagery": esri
+            }, null, { collapsed: true, position: 'topright' }).addTo(map);
+            debugLog("แผนที่เริ่มต้นสำเร็จ");
+        }
+        
+        function updateThaiDateTime() {
+            const now = new Date();
+            const options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+                              hour: '2-digit', minute: '2-digit', second: '2-digit',
+                              timeZone: 'Asia/Bangkok', hour12: false };
+            let thaiStr = new Intl.DateTimeFormat('th-TH', options).format(now);
+            if (!thaiStr.includes('พ.ศ.')) {
+                const buddhistYear = now.getFullYear() + 543;
+                thaiStr = thaiStr.replace(now.getFullYear(), buddhistYear);
+            }
+            document.getElementById('thaiDateTime').innerHTML = `📅 ${thaiStr} น.`;
+        }
+        
+        function escapeHtml(str) {
+            if (!str) return "";
+            return str.replace(/[&<>]/g, m => m==='&'?'&amp;':m==='<'?'&lt;':'&gt;');
+        }
+        
+        function parseCapPolygon(polygonStr) {
+            if (!polygonStr || typeof polygonStr !== 'string') return [];
+            polygonStr = polygonStr.trim();
+            const tokens = polygonStr.split(/\s+/);
+            const coords = [];
+            for (let token of tokens) {
+                if (!token.includes(',')) continue;
+                const [lat, lon] = token.split(',').map(Number);
+                if (isNaN(lat) || isNaN(lon)) continue;
+                coords.push([lon, lat]);
+            }
+            if (coords.length >= 3) {
+                const first = coords[0];
+                const last = coords[coords.length-1];
+                if (first[0] !== last[0] || first[1] !== last[1]) coords.push([first[0], first[1]]);
+            }
+            return coords;
+        }
+        
+        function cleanXmlText(rawText) {
+            if (rawText.charCodeAt(0) === 0xFEFF) rawText = rawText.slice(1);
+            const firstLt = rawText.indexOf('<');
+            if (firstLt > 0) rawText = rawText.slice(firstLt);
+            if (!rawText.match(/^\s*<\?xml|^\s*<alert|^\s*<cap:alert/i)) {
+                const match = rawText.match(/<alert[\s\S]*<\/alert>/i);
+                if (match) rawText = match[0];
+                else throw new Error("ไม่พบโครงสร้าง XML (หา <alert> ไม่เจอ)");
+            }
+            return rawText;
+        }
+        
+        function renderXmlToMap(xmlText, sourceName) {
+            const cleanText = cleanXmlText(xmlText);
+            const parser = new DOMParser();
+            const xmlDoc = parser.parseFromString(cleanText, "text/xml");
+            const parseError = xmlDoc.querySelector('parsererror');
+            if (parseError) throw new Error("XML ไม่ถูกต้อง: " + (parseError.textContent || ""));
+            
+            let alertElem = xmlDoc.documentElement;
+            if (alertElem.localName !== 'alert' && alertElem.nodeName !== 'alert' && alertElem.nodeName !== 'cap:alert') {
+                alertElem = xmlDoc.querySelector('alert, cap|alert');
+                if (!alertElem) throw new Error("ไม่พบ <alert> ใน XML");
+            }
+            
+            function getTagText(parent, tagName) {
+                if (!parent) return "";
+                let el = parent.getElementsByTagName(tagName)[0];
+                if (el) return el.textContent || "";
+                el = parent.getElementsByTagNameNS("urn:oasis:names:tc:emergency:cap:1.2", tagName)[0];
+                if (el) return el.textContent || "";
+                return "";
+            }
+            
+            const identifier = getTagText(alertElem, "identifier");
+            const sent = getTagText(alertElem, "sent");
+            
+            let infoNodes = [];
+            const infoFromNS = alertElem.getElementsByTagNameNS("urn:oasis:names:tc:emergency:cap:1.2", "info");
+            if (infoFromNS.length) infoNodes = Array.from(infoFromNS);
+            else {
+                const infoFromLocal = alertElem.getElementsByTagName("info");
+                if (infoFromLocal.length) infoNodes = Array.from(infoFromLocal);
+            }
+            if (!infoNodes.length) throw new Error("ไม่พบ <info>");
+            
+            const features = [];
+            for (let info of infoNodes) {
+                const eventName = getTagText(info, "event") || "เหตุการณ์ไม่ระบุ";
+                const severity = getTagText(info, "severity") || "ไม่ระบุ";
+                const headline = getTagText(info, "headline") || "";
+                const description = getTagText(info, "description") || "";
+                const instruction = getTagText(info, "instruction") || "";
+                
+                let areaNodes = [];
+                const areaFromNS = info.getElementsByTagNameNS("urn:oasis:names:tc:emergency:cap:1.2", "area");
+                if (areaFromNS.length) areaNodes = Array.from(areaFromNS);
+                else {
+                    const areaFromLocal = info.getElementsByTagName("area");
+                    if (areaFromLocal.length) areaNodes = Array.from(areaFromLocal);
+                }
+                
+                for (let area of areaNodes) {
+                    const areaDesc = getTagText(area, "areaDesc") || "พื้นที่ประสบภัย";
+                    let polygonNodes = [];
+                    const polyFromNS = area.getElementsByTagNameNS("urn:oasis:names:tc:emergency:cap:1.2", "polygon");
+                    if (polyFromNS.length) polygonNodes = Array.from(polyFromNS);
+                    else {
+                        const polyFromLocal = area.getElementsByTagName("polygon");
+                        if (polyFromLocal.length) polygonNodes = Array.from(polyFromLocal);
+                    }
+                    for (let polyNode of polygonNodes) {
+                        const polyText = polyNode.textContent?.trim();
+                        if (!polyText) continue;
+                        const coordsRing = parseCapPolygon(polyText);
+                        if (coordsRing.length < 3) continue;
+                        features.push({
+                            type: "Feature",
+                            geometry: { type: "Polygon", coordinates: [coordsRing] },
+                            properties: {
+                                event: eventName, severity, headline: headline || eventName,
+                                description: description.substring(0,500),
+                                instruction: instruction || "ติดตามประกาศจากกรมอุตุฯ",
+                                areaDesc, alertId: identifier, sentTime: sent
+                            }
+                        });
+                    }
+                }
+            }
+            if (features.length === 0) throw new Error("ไม่พบ Polygon ที่แสดงแผนที่ได้");
+            
+            const featureCollection = { type: "FeatureCollection", features };
+            if (geoJsonLayer) map.removeLayer(geoJsonLayer);
+            
+            // ใช้ opacity ปัจจุบันจาก slider
+            const currentAlertOpacity = parseFloat(document.getElementById('alertOpacity').value);
+            
+            geoJsonLayer = L.geoJSON(featureCollection, {
+                style: (feature) => {
+                    let fillColor = "#ff9800";
+                    const sev = feature.properties.severity?.toLowerCase();
+                    if (sev === "extreme") fillColor = "#d32f2f";
+                    else if (sev === "severe") fillColor = "#f44336";
+                    else if (sev === "moderate") fillColor = "#ffb74d";
+                    else if (sev === "minor") fillColor = "#ffd54f";
+                    return { color: "#fff", weight: 2, fillColor, fillOpacity: currentAlertOpacity, dashArray: "4,4" };
+                },
+                onEachFeature: (feature, layer) => {
+                    const p = feature.properties;
+                    let sevTh = { extreme:"รุนแรงที่สุด", severe:"รุนแรง", moderate:"ปานกลาง", minor:"เล็กน้อย" }[p.severity?.toLowerCase()] || p.severity;
+                    const popup = `
+                        <div style="min-width:220px;">
+                            <h4 style="margin:0 0 6px;color:#e65100;">⚠️ ${escapeHtml(p.event)}</h4>
+                            <strong>📍 พื้นที่:</strong> ${escapeHtml(p.areaDesc)}<br>
+                            <strong>🔴 ความรุนแรง:</strong> ${escapeHtml(sevTh)}<br>
+                            <strong>📢 หัวข้อ:</strong> ${escapeHtml(p.headline.substring(0,100))}<br>
+                            <strong>📝 รายละเอียด:</strong> ${escapeHtml(p.description.substring(0,150))}${p.description.length>150?"…":""}<br>
+                            <strong>📌 คำแนะนำ:</strong> ${escapeHtml(p.instruction.substring(0,100))}<br>
+                            <small>🆔 ${escapeHtml(p.alertId)}<br>⏱️ ${escapeHtml(p.sentTime)}</small>
+                        </div>`;
+                    layer.bindPopup(popup);
+                }
+            }).addTo(map);
+            
+            try {
+                const bounds = geoJsonLayer.getBounds();
+                if (bounds.isValid()) map.fitBounds(bounds, { padding: [30,30] });
+            } catch(e) { map.setView([13.5, 100.6], 7.2); }
+            
+            document.getElementById('currentUrlDisplay').innerHTML = `✅ แหล่งข้อมูล: ${sourceName}`;
+            document.getElementById('fetchTimeDisplay').innerHTML = new Date().toLocaleTimeString('th-TH');
+        }
+        
+        function handleUpload(file) {
+            if (!file) return;
+            const loadingDiv = document.getElementById('loadingOverlay');
+            const loadingHint = document.getElementById('loadingUrlHint');
+            loadingDiv.style.display = 'flex';
+            loadingHint.innerText = `กำลังอ่านไฟล์: ${file.name}`;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    renderXmlToMap(e.target.result, `ไฟล์ ${file.name}`);
+                    loadingDiv.style.display = 'none';
+                } catch (err) {
+                    loadingDiv.innerHTML = `<div class="error-msg"><strong>❌ ข้อผิดพลาด</strong><br>${escapeHtml(err.message)}<br><br><button class="upload-btn" onclick="location.reload();">ปิด</button></div>`;
+                }
+            };
+            reader.onerror = () => {
+                loadingDiv.innerHTML = `<div class="error-msg">อ่านไฟล์ไม่สำเร็จ</div>`;
+            };
+            reader.readAsText(file, "UTF-8");
+        }
+        
+        async function loadFromUrl(xmlUrl) {
+            if (!xmlUrl) return;
+            clearMapData(false);
+            const loadingDiv = document.getElementById('loadingOverlay');
+            const loadingHint = document.getElementById('loadingUrlHint');
+            loadingDiv.style.display = 'flex';
+            loadingHint.innerText = `กำลังติดต่อ ${xmlUrl} ...`;
+            
+            const noCacheUrl = xmlUrl + (xmlUrl.includes('?') ? '&_t=' : '?_t=') + Date.now();
+            const proxies = [
+                (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+                (url) => `https://corsproxy.io/?${encodeURIComponent('url=' + url)}`
+            ];
+            
+            for (let i = 0; i < proxies.length; i++) {
+                try {
+                    const controller = new AbortController();
+                    const timeout = setTimeout(() => controller.abort(), 15000);
+                    const proxyUrl = proxies[i](noCacheUrl);
+                    const resp = await fetch(proxyUrl, { signal: controller.signal });
+                    clearTimeout(timeout);
+                    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                    const text = await resp.text();
+                    if (text.length < 200) throw new Error("ข้อมูลไม่สมบูรณ์");
+                    renderXmlToMap(text, `URL: ${xmlUrl}`);
+                    loadingDiv.style.display = 'none';
+                    return;
+                } catch (err) {
+                    console.warn(`Proxy ${i+1} ล้มเหลว:`, err);
+                    loadingHint.innerText = `Proxy ${i+1} ไม่สำเร็จ, กำลังลองตัวถัดไป...`;
+                }
+            }
+            throw new Error("ไม่สามารถโหลดผ่าน URL ได้ (CORS) กรุณาใช้วิธีอัปโหลดไฟล์ XML ที่ดาวน์โหลดแทน");
+        }
+        
+        function clearMapData(keepRadar = true) {
+            if (geoJsonLayer) {
+                map.removeLayer(geoJsonLayer);
+                geoJsonLayer = null;
+            }
+            if (!keepRadar && radarLayer && map.hasLayer(radarLayer)) {
+                map.removeLayer(radarLayer);
+                isRadarVisible = false;
+                document.getElementById('radarToggleBtn').classList.remove('active');
+                document.getElementById('radarToggleBtn').innerHTML = '<i class="fas fa-cloud-sun-rain"></i> เปิดเรดาร์';
+            }
+            document.getElementById('currentUrlDisplay').innerHTML = 'ยังไม่มีข้อมูลเตือนภัย';
+            document.getElementById('fetchTimeDisplay').innerHTML = '--:--:--';
+        }
+        
+        // Event binding
+        document.getElementById('uploadBtn').addEventListener('click', () => {
+            const fileInput = document.getElementById('fileInput');
+            if (!fileInput.files.length) { alert("เลือกไฟล์ XML ก่อน"); return; }
+            handleUpload(fileInput.files[0]);
+        });
+        document.getElementById('loadUrlBtn').addEventListener('click', async () => {
+            const url = document.getElementById('xmlUrlInput').value.trim();
+            if (!url) { alert("ใส่ URL XML"); return; }
+            try {
+                await loadFromUrl(url);
+            } catch (err) {
+                const loadingDiv = document.getElementById('loadingOverlay');
+                loadingDiv.innerHTML = `<div class="error-msg"><strong>❌ โหลด URL ไม่สำเร็จ</strong><br>${escapeHtml(err.message)}<br><br>💡 แนะนำ: ดาวน์โหลดไฟล์ XML แล้วใช้ปุ่มอัปโหลดแทน<br><button class="upload-btn" onclick="location.reload();">ปิด</button></div>`;
+                loadingDiv.style.display = 'flex';
+            }
+        });
+        document.getElementById('clearMapBtn').addEventListener('click', () => {
+            clearMapData(true);
+            document.getElementById('fileInput').value = "";
+            document.getElementById('xmlUrlInput').value = "";
+        });
+        document.getElementById('radarToggleBtn').addEventListener('click', toggleRadar);
+        document.getElementById('radarOpacity').addEventListener('input', (e) => updateRadarOpacity(e.target.value));
+        document.getElementById('radarStyle').addEventListener('change', (e) => changeRadarStyle(e.target.value));
+        
+        // เพิ่ม event สำหรับ slider ปรับ opacity ของพื้นที่แจ้งเตือน
+        document.getElementById('alertOpacity').addEventListener('input', (e) => updateAlertOpacity(e.target.value));
+        
+        const panelContent = document.getElementById('panelContent');
+        const toggleBtn = document.getElementById('togglePanelBtn');
+        let panelCollapsed = false;
+        toggleBtn.addEventListener('click', () => {
+            panelCollapsed = !panelCollapsed;
+            if (panelCollapsed) {
+                panelContent.classList.add('collapsed');
+                toggleBtn.innerHTML = '+';
+            } else {
+                panelContent.classList.remove('collapsed');
+                toggleBtn.innerHTML = '−';
+            }
+        });
+        
+        updateThaiDateTime();
+        setInterval(updateThaiDateTime, 1000);
+        initMap();
+        const initialRadarOpacity = document.getElementById('radarOpacity').value;
+        initRadarLayer('precipitation', initialRadarOpacity);
+        debugLog("ระบบพร้อมใช้งาน เรดาร์เริ่มต้นสไตล์ precipitation (เข้มขึ้น)");
+        debugLog("สามารถปรับความโปร่งใสของพื้นที่เตือนภัยได้จาก slider 'ความโปร่งใส CAP'");
+
+        // Expose precipitation functions to global scope (ใช้จาก onclick HTML)
+        window.loadPrecipXML      = loadPrecipXML;
+        window.togglePrecipLayer  = togglePrecipLayer;
+        window.clearPrecipLayer   = clearPrecipLayer;
+        window.updatePrecipOpacity = updatePrecipOpacity;
+    })();
+</script>
+</body>
+</html>
